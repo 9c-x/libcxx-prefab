@@ -3,17 +3,18 @@ import java.nio.file.Paths
 
 plugins {
     id 'com.android.library'
-    id 'com.vanniktech.maven.publish'
+//    id 'com.vanniktech.maven.publish'
 }
 
 android {
     compileSdkVersion 31
     buildToolsVersion "30.0.3"
+    ndkVersion "28.0.12433566"
     defaultConfig {
         minSdkVersion 16
         targetSdkVersion 31
         versionCode 1
-        versionName "1.2.0"
+        versionName "1.3.0"
         externalNativeBuild {
             ndkBuild {
                 arguments "-j${Runtime.getRuntime().availableProcessors()}"
@@ -39,36 +40,51 @@ android {
 
 // NDK does not run strip on static libraries, do it ourselves
 def allAbi = [
-        'armeabi-v7a': 'arm-linux-androideabi-strip',
-        'arm64-v8a'  : 'aarch64-linux-android-strip',
-        'x86'        : 'i686-linux-android-strip',
-        'x86_64'     : 'x86_64-linux-android-strip']
+        'armeabi-v7a': 'arm-linux-androideabi',
+        'arm64-v8a'  : 'aarch64-linux-android',
+        'x86'        : 'i686-linux-android',
+        'x86_64'     : 'x86_64-linux-android'
+]
 
-def stripNativeRelease = task('stripNativeRelease').doLast {
-    def isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows()
+def stripNativeRelease = tasks.register("stripNativeRelease") {
+    doLast {
+        def isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows()
 
-    for (String abi : allAbi.keySet()) {
-        def path = Paths.get(project.buildDir.path, 'intermediates',
-                'ndkBuild', 'release', 'obj', 'local', abi)
-        def lib = path.resolve('libcxx.a')
+        allAbi.each { abi, triple ->
+            def path = Paths.get(project.buildDir.path, 'intermediates',
+                    'ndkBuild', 'release', 'obj', 'local', abi)
+            def lib = path.resolve('libcxx.a')
 
-        def toolchain = Paths.get(android.ndkDirectory.toString(), 'toolchains', 'llvm', 'prebuilt')
-        toolchain = Files.walk(toolchain).filter { it != toolchain }.findFirst().get()
+            if (!Files.exists(lib)) {
+                println("skip $abi: no libcxx.a")
+                return
+            }
 
-        def strip = "${allAbi.get(abi)}${isWindows ? ".exe" : ""}"
-        def stripPath = toolchain.resolve(Paths.get('bin', strip))
+            // 找 llvm-objcopy (或 llvm-strip)
+            def toolchain = Paths.get(android.ndkDirectory.toString(), 'toolchains', 'llvm', 'prebuilt')
+            def hostTag = org.gradle.internal.os.OperatingSystem.current().isWindows() ? "windows-x86_64"
+                    : org.gradle.internal.os.OperatingSystem.current().isMacOsX() ? "darwin-x86_64"
+                    : "linux-x86_64"
 
-        exec {
-            commandLine stripPath, '--strip-unneeded', '--remove-section=.comment', lib
-            workingDir path
-            ignoreExitValue false
+            def binDir = toolchain.resolve(hostTag).resolve("bin")
+            def objcopy = binDir.resolve(isWindows ? "llvm-objcopy.exe" : "llvm-objcopy")
+
+            exec {
+                commandLine objcopy.toString(),
+                        "--strip-unneeded",
+                        "--remove-section=.comment",
+                        lib.toString()
+                workingDir path
+                ignoreExitValue false
+            }
+            println("stripped $lib")
         }
     }
 }
 
 tasks.whenTaskAdded { task ->
     if (task.name == 'externalNativeBuildRelease') {
-        task.finalizedBy stripNativeRelease
+        task.finalizedBy(stripNativeRelease)
     }
 }
 
@@ -76,3 +92,4 @@ ext {
     POM_NAME = "libcxx Prefab"
     POM_DESCRIPTION = "LLVM libc++, specifically for Android, removing exception and RTTI support (https://github.com/topjohnwu/libcxx)."
 }
+
